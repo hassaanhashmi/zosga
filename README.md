@@ -1,1 +1,1 @@
-# zsga_irs
+# Zeroth-Order Stochastic Gradient Ascent
