@@ -24,4 +24,4 @@ class Sumrate():
         rates = self.user_weights*np.log2(1+vec_sinr)
         return np.sum(rates)/mat_H.shape[0], \
                 np.squeeze(rates), \
-                np.squeeze(vec_sinr)
+                vec_sinr.T

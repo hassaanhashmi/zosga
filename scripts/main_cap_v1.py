@@ -1,11 +1,9 @@
 import os
-import argparse
 import numpy as np
-from model.env_irs_v1 import Env_IRS_v1
+from model.env import Env as Env_IRS_v1
+from model.irs_cap_panel import IRS_PANEL
 from method.wmmse import WMMSE
-from method.tts import TTS
-from method.zosga import ZerothOrder as ZerothOrder
-from utils.sumrate_cost import Sumrate
+from method.zosga_cap import ZerothOrderCap as ZerothOrder
 import matplotlib.pyplot as plt
 from utils.helper import movmean
 from datetime import datetime
@@ -17,12 +15,12 @@ from multiprocessing.managers import SharedMemoryManager
 class TrainIter(mp.Process):
     def __init__(self, id, pow_max=None, num_ap=6, num_users=4, 
         num_irs_x=4, num_irs_z=10, 
-        sigma_2=None, alphas=[1]*4, C_0=None,
+        sigma_2=None, user_weights=[1]*4, C_0=None,
         alpha_iu=3, alpha_ai=2.2, alpha_au=3.4,
         beta_iu=None, beta_ai= None, beta_au = None, 
-        r_d=0, r_r=0.5, r_rk_scale=np.arange(4)/3,
-        wmmse_iter=None, T_H=10, tau=0.01, rho_t_exp=-0.8, 
-        gamma_t_exp = -1.0, lr_th_ang=None, lr_th_amp=None, mu=None, 
+        r_d=0, r_r=0.5, r_rk_list=np.arange(4)/3,
+        freq=8e9, cap_min=0.1, cap_max=0.5, Lvar=0.5e-9, Dx=5e-3, Dy= 5e-3, wx=0.5e-3, wy=0.5e-3, incidence_angle=0,
+        wmmse_iter=None, lr_th=None, mu=None, 
         num_exp=None, num_iterations=None,
         log_iter=None):
         super(TrainIter, self).__init__()
@@ -33,7 +31,7 @@ class TrainIter(mp.Process):
         self.num_irs_x = num_irs_x
         self.num_irs_z = num_irs_z
         self.sigma_2 = sigma_2
-        self.user_weights = alphas
+        self.user_weights = user_weights
         self.C_0 = C_0
         self.alpha_iu = alpha_iu
         self.alpha_ai = alpha_ai
@@ -43,103 +41,82 @@ class TrainIter(mp.Process):
         self.beta_au = beta_au
         self.r_d = r_d
         self.r_r = r_r
-        self.r_rk_scale = r_rk_scale
+        self.r_rk_list = r_rk_list
+
+        self.freq = freq #GHz
+        self.cap_min = cap_min
+        self.cap_max = cap_max
+        self.Lvar=Lvar
+        self.Dx=Dx #patch array periodicity along x-direction
+        self.Dy=Dy #patch array periodicity along y-direction
+        self.wx=wx #patch array gap width along x-direction
+        self.wy=wy #patch array gap width along y-direction
+        self.incidence_angle=incidence_angle #incident angle in radians
+
+        sigma_copper=58.7*1e6 #copper conductivity
+        mu0 = 4 * np.pi * 1e-7 #vacuum permeability 
+        delta=np.sqrt(1./(np.pi*freq*sigma_copper*mu0)) #skin depth
+        self.Rs=1/(sigma_copper*delta) #surface impedance
+        self.er1=4.4-1j*0.088 #substrate dielectric permittivity
+        self.d=1.2e-3 #substrate thickness (m)
+
         self.wmmse_iter = wmmse_iter
-        self.T_H = T_H
-        self.tau = tau
-        self.rho_t_exp = rho_t_exp
-        self.gamma_t_exp = gamma_t_exp
-        self.lr_th_ang = lr_th_ang
-        self.lr_th_amp = lr_th_amp
+        self.lr_th = lr_th
         self.mu = mu
         self.num_exp = num_exp
         self.num_iterations = num_iterations
         self.log_iter = log_iter
-        self.p_wmmse = p_wmmse
-        self.p_tts = p_tts
+        # self.p_wmmse = p_wmmse
         self.p_zo = p_zo
-        self.p_zo_c = p_zo_c
 
     def run(self):
         self.rand_state = np.random.RandomState(self.id)
-        vec_theta = np.exp(1j*self.rand_state.uniform(-np.pi,np.pi, 
-                                                size=self.num_irs_x*self.num_irs_z))
-        
-        self.plot_wmmse = np.ndarray(shape=(self.num_exp, self.num_iterations),buffer=self.p_wmmse.buf)
-        self.plot_tts = np.ndarray(shape=(self.num_exp, self.num_iterations),buffer=self.p_tts.buf)
-        self.plot_zosga = np.ndarray(shape=(self.num_exp, self.num_iterations),buffer=self.p_zo.buf)
-        self.plot_zosga_c = np.ndarray(shape=(self.num_exp, self.num_iterations),buffer=self.p_zo_c.buf)
+        cap_vec = self.rand_state.uniform(self.cap_min,self.cap_max,size=self.num_irs_x*self.num_irs_z)
+        theta_deg_vec = self.incidence_angle * np.ones(self.num_irs_x*self.num_irs_z)
+
+        # self.plot_wmmse = np.ndarray(shape=(self.num_exp, self.num_iterations),buffer=self.p_wmmse.buf)
+        self.plot_zo = np.ndarray(shape=(self.num_exp, self.num_iterations),buffer=self.p_zo.buf)
 
         print("starting Experiment ",self.id+1)
+        self.rand_state = np.random.RandomState(self.id)
         self.env = Env_IRS_v1(rand_key=self.id, num_ap=self.num_ap,
                     num_users=self.num_users,
                     num_irs_x=self.num_irs_x,num_irs_z=self.num_irs_z, C_0=self.C_0,
                     alpha_iu=self.alpha_iu, alpha_ai=self.alpha_ai, alpha_au=self.alpha_au,
                     beta_iu=self.beta_iu, beta_ai=self.beta_ai, beta_au=self.beta_au,
-                    r_d=self.r_d, r_r=self.r_r, r_rk_scale=self.r_rk_scale,
+                    r_d=self.r_d, r_r=self.r_r, r_rk_list=self.r_rk_list,
                     dx=50, dy=3, drad=3, ang_u=[60,30,30,60],
                     load_det_comps=False, save_det_comps=False)
-        self.wmmse = WMMSE(pow_max=self.pow_max, sigma_2=self.sigma_2, 
-                        user_weights=self.user_weights, num_ap=self.num_ap,
-                        wmmse_iter=self.wmmse_iter, env=self.env,
-                        vec_theta=vec_theta)
-        self.tts = TTS(env=self.env, pow_max=self.pow_max,
-                        num_irs_x=self.num_irs_x, num_irs_z=self.num_irs_z, 
-                        sigma_2=self.sigma_2, user_weights=self.user_weights, 
-                        num_ap=self.num_ap, wmmse_iter=self.wmmse_iter,
-                        T_H=self.T_H, tau=self.tau, rho_t_pow=self.rho_t_exp, 
-                        gamma_t_pow=self.gamma_t_exp, vec_theta=vec_theta)
-        self.zosga = ZerothOrder(rand_key=self.id, env=self.env, pow_max=self.pow_max, 
-                        irs_vec=[self.num_irs_x*self.num_irs_z], sigma_2=self.sigma_2,
-                        user_weights=self.user_weights, num_ap=self.num_ap,
-                        wmmse_iter=self.wmmse_iter, lr_th_ang=self.lr_th_ang, 
-                        lr_th_amp=self.lr_th_amp, mu=self.mu, 
-                        vec_theta=vec_theta)
-        self.zosga_c = ZerothOrder(rand_key=self.id, env=self.env, pow_max=self.pow_max,
-                        irs_vec=[self.num_irs_x*self.num_irs_z], sigma_2=self.sigma_2,
-                        user_weights=self.user_weights, num_ap=self.num_ap, 
-                        wmmse_iter=self.wmmse_iter, lr_th_ang=self.lr_th_ang, 
-                        lr_th_amp=self.lr_th_amp, mu=self.mu, 
-                        vec_theta=vec_theta, proj_irs='circle')
+        self.irs_panel = IRS_PANEL(freq=self.freq, Dx=self.Dx, wx=self.wx, 
+                            Dy=self.Dy, wy=self.wy, Rs=self.Rs, d=self.d, 
+                            er1=self.er1, Lvar=self.Lvar,
+                            theta_deg_vec=theta_deg_vec)
+        # vec_theta_ = self.irs_panel.irs_panel_theta(cap_vec)
+        # self.wmmse = WMMSE(self.pow_max,self.sigma_2, self.user_weights, self.wmmse_iter,
+        #                     env=self.env, vec_theta=vec_theta_)
+        self.zo = ZerothOrder(self.env, self.irs_panel, self.pow_max, [self.num_irs_x*self.num_irs_z],self.sigma_2,
+                        self.user_weights, self.num_ap, self.wmmse_iter, self.lr_th, self.mu, self.cap_min, self.cap_max, cap_vec=cap_vec)
 
         
-        self.wmmse.x0 = 1
-        self.tts.x0 = 1
-        self.zosga.x0 = 1
-        self.zosga_c.x0 = 1
+        # self.wmmse.newtons_init_val = 1
+        self.zo.x0 = 1
         freeze_tts_irs = False
-        decay_factor_ang = 1.
-        decay_factor_amp = 1.
-        self.sumrate_loss = Sumrate(self.user_weights, self.sigma_2)
+        decay_factor = 1.
         for i in range(self.num_iterations):
             self.env.sample_channels()
-            self.plot_wmmse[self.id, i] = self.wmmse.step()
-
-            if i>=201:
-                freeze_tts_irs=True
-            self.plot_tts[self.id, i] = self.tts.step(i+1, freeze_irs=freeze_tts_irs)
-
-            self.plot_zosga[self.id, i]= self.zosga.step(lr_decay_factor_ang=decay_factor_ang,
-                                                    lr_decay_factor_amp=decay_factor_amp)
-
-            self.plot_zosga_c[self.id, i] = self.zosga_c.step(lr_decay_factor_ang=decay_factor_ang,
-                                                        lr_decay_factor_amp=decay_factor_amp)
+            # self.plot_wmmse[self.id, i] = self.wmmse.step()
+            self.plot_zo[self.id, i] = self.zo.step(lr_decay_factor=decay_factor)
             if i<1001:
-                decay_factor_ang = 0.9972**i
-                decay_factor_amp = 0.9972**i
-            if (i+1)%self.log_iter==0 and self.log_iter!=1: 
+                decay_factor = 0.9972**i
+            if (i+1)%self.log_iter==0 and self.log_iter>1: 
                 print("Exp ",self.id+1," i:",i+1,
-                    " WMMSE:",np.average(self.plot_wmmse[self.id,((i+1)-self.log_iter):i]),
-                    " TTS:",np.average(self.plot_tts[self.id,((i+1)-self.log_iter):i]),
-                    " ZOSGA:",np.average(self.plot_zosga[self.id,((i+1)-self.log_iter):i]),
-                    " ZOSGA_C:",np.average(self.plot_zosga_c[self.id,((i+1)-self.log_iter):i])
+                    # " WMMSE:",np.average(self.plot_wmmse[self.id,((i+1)-self.log_iter):i]),
+                    " ZO:",np.average(self.plot_zo[self.id,((i+1)-self.log_iter):i])
                     )
-            if  self.log_iter==1: 
+            if self.log_iter==1:
                 print("Exp ",self.id+1," i:",i+1,
-                    " WMMSE:",self.plot_wmmse[self.id,i],
-                    " TTS:",self.plot_tts[self.id,i],
-                    " ZOSGA:",self.plot_zosga[self.id,i],
-                    " ZOSGA_C:",self.plot_zosga_c[self.id,i]
+                    # " WMMSE:",self.plot_wmmse[self.id, i],
+                    " ZO:",self.plot_zo[self.id, i]
                     )
 
 if __name__ == "__main__":
@@ -183,12 +160,10 @@ if __name__ == "__main__":
     users = 4
     irs_x = 4
     irs_z = 10
-    print(irs_x, irs_z)
     user_weights = [1]*users
     #parameters in Decibels
     pow_dbm = 5
-    sigm_2_dbm = -100
-    print(10**(sigm_2_dbm/10)/1000)
+    sigm_2_dbm = -80
     C_0_db = -30
     beta_iu_db = 5
     beta_ai_db = beta_iu_db
@@ -199,42 +174,48 @@ if __name__ == "__main__":
     alpha_au=3.4
     r_r = 0.5
     r_d = 0
-    r_rk_scale = 4
+    r_rk_list = np.arange(users)/3
     load_det_comps=False
+
+    #IRS parameters
+    freq=6e9
+    cap_min=0.1
+    cap_max=0.5
+    Lvar=0.5e-9
+    Dx=5e-3
+    Dy= 5e-3
+    wx=0.5e-3
+    wy=0.5e-3
+    inc_angle= -0.0599281551 #radians
+
+
     #wmmse parameters
     wmmse_iter = 20
-    #tts parameters
-    T_H=10
-    tau=0.01
-    rho_t_exp=-0.8
-    gamma_t_exp = -1.0
     #zo parameters
-    lr_th_ang = 0.4
-    lr_th_amp = 0.01
+    lr_th = 0.01
     mu = 1e-12
 
-    num_exp = 500
+    num_exp = 2000
     num_iterations = 60000
     log_iter = 5000
     
 
     with SharedMemoryManager() as smm:
-        p_wmmse = smm.SharedMemory(size=num_exp*num_iterations*8)
-        p_tts = smm.SharedMemory(size=num_exp*num_iterations*8)
+        # p_wmmse = smm.SharedMemory(size=num_exp*num_iterations*8)
         p_zo = smm.SharedMemory(size=num_exp*num_iterations*8)
-        p_zo_c = smm.SharedMemory(size=num_exp*num_iterations*8)
         jobs = []
         for exp in range(num_exp):
             p = TrainIter(id=exp, pow_max=10**(pow_dbm/10)/1000, num_ap=6, num_users=users, 
                     num_irs_x=irs_x, num_irs_z=irs_z, sigma_2=10**(sigm_2_dbm/10)/1000, 
-                    alphas=user_weights, C_0 = 10**(C_0_db/10), 
+                    user_weights=user_weights, C_0 = 10**(C_0_db/10), 
                     alpha_iu=alpha_iu, alpha_ai=alpha_ai, alpha_au=alpha_au, 
                     beta_iu=10**(beta_iu_db/10), beta_ai= 10**(beta_ai_db/10), 
                     beta_au = 10**(beta_au_db/10), r_d=r_d, 
-                    r_r=r_r, r_rk_scale=r_rk_scale, 
+                    r_r=r_r, r_rk_list=r_rk_list, 
+                    freq=freq, cap_min=cap_min, cap_max=cap_max, Lvar=Lvar, Dx=Dx, 
+                    Dy=Dy, wx=wx, wy=wy, incidence_angle=inc_angle,
                     wmmse_iter=wmmse_iter, 
-                    T_H=T_H, tau=tau, rho_t_exp=rho_t_exp, gamma_t_exp=gamma_t_exp, 
-                    lr_th_ang=lr_th_ang, lr_th_amp=lr_th_amp, mu=mu, 
+                    lr_th=lr_th, mu=mu, 
                     num_exp=num_exp, num_iterations=num_iterations,
                     log_iter=log_iter)
             jobs.append(p)
@@ -242,31 +223,27 @@ if __name__ == "__main__":
         for p in jobs:
             p.join()
             
-        plot_wmmse = np.ndarray(shape=(num_exp, num_iterations),buffer=p_wmmse.buf)
-        plot_tts = np.ndarray(shape=(num_exp, num_iterations),buffer=p_tts.buf)
+        # plot_wmmse = np.ndarray(shape=(num_exp, num_iterations),buffer=p_wmmse.buf)
         plot_zo = np.ndarray(shape=(num_exp, num_iterations),buffer=p_zo.buf)
-        plot_zo_c = np.ndarray(shape=(num_exp, num_iterations),buffer=p_zo_c.buf)
         
-        np.save('/home/radio/hassaan/dpgzo/scripts_mp/plot_data/main/v1/plot_wmmse_v1_rebuttal_hsnr.npy',plot_wmmse)
-        np.save('/home/radio/hassaan/dpgzo/scripts_mp/plot_data/main/v1/plot_tts_v1_rebuttal_hsnr.npy', plot_tts)
-        np.save('/home/radio/hassaan/dpgzo/scripts_mp/plot_data/main/v1/plot_zo_v1_rebuttal_hsnr.npy', plot_zo)
-        np.save('/home/radio/hassaan/dpgzo/scripts_mp/plot_data/main/v1/plot_zo_c_v1_rebuttal_hsnr.npy', plot_zo_c)
+        # np.save('/home/radio/hassaan/dpgzo/scripts_mp/plot_data/main/v1/plot_wmmse_v1.npy',plot_wmmse)
+        # np.save('/home/radio/hassaan/dpgzo/scripts_mp/plot_data/main/v1/plot_tts_v1.npy', plot_tts)
+        np.save('/home/radio/hassaan/dpgzo/scripts_mp/plot_data/main/v1/plot_zo_cap_v1_6GHz_rebuttal.npy', plot_zo)
+        # np.save('/home/radio/hassaan/dpgzo/scripts_mp/plot_data/main/v1/plot_zo_c_v1.npy', plot_zo_c)
 
     #plot results
     plt.figure(figsize=(12, 8), dpi=80)
-    plt.plot(movmean(np.average(plot_wmmse,axis=0), 2000), color='b', label='WMMSE')
-    plt.plot(movmean(np.average(plot_tts, axis=0), 2000), color='r', label='TTS')
+    # plt.plot(movmean(np.average(plot_wmmse,axis=0), 2000), color='b', label='WMMSE')
     plt.plot(movmean(np.average(plot_zo, axis=0), 2000), color='g', label='ZO')
-    plt.plot(movmean(np.average(plot_zo_c, axis=0), 2000), color='k', label='ZO (Circle Projection)')
 
     
     #plotting annotations
     plt.xlabel("Iteration")
     plt.ylabel("Sumrate")
-    plt.title("ZO with Phase Amp")
+    plt.title("ZO with Capacitance")
     plt.legend()
     plt.show()
-    plt.savefig('main2.png')
+    plt.savefig('main_cap_6GHz.png')
 
     now = datetime.now()
     current_time = now.strftime("%H:%M:%S")

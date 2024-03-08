@@ -3,7 +3,7 @@ import scipy.linalg as la
 
 
 class Env_IRS_v2():
-    def __init__(self, num_ap=6, num_users=4, 
+    def __init__(self, rand_key=None, num_ap=6, num_users=4, 
                 num_irs_x1=4, num_irs_z1=10, num_irs_x2=4, num_irs_z2=10,
                 C_0=1e-3,
                 alpha_iu1=3.0, alpha_ai1=2.2, alpha_au=3.4,
@@ -13,8 +13,9 @@ class Env_IRS_v2():
                 r_d=0, 
                 r_r1=0.5, r_rk_scale1=3, 
                 r_r2=0.5, r_rk_scale2=3, 
-                dx=50, dy=3, dz=[10,-10], drad=3, ang_u=[60,30,-30,-60],#1,2,3,4
+                dx=50, dy=3, dz=[0,-5], drad=3, ang_u=[60,30,30,60],#1,2,3,4
                 load_det_comps=False, save_det_comps=False, switch_d=True):
+        self.rand_state = np.random.RandomState(rand_key)
         self.num_ap = num_ap
         self.num_users = num_users
         
@@ -25,6 +26,7 @@ class Env_IRS_v2():
         self.num_irs_x2 = num_irs_x2
         self.num_irs_z2 = num_irs_z2
         self.num_irs2 = self.num_irs_x2*self.num_irs_z2
+        self.irs_vec = [self.num_irs1 , self.num_irs2]
 
         self.load_det_comps = load_det_comps
         self.save_det_comps = save_det_comps
@@ -198,6 +200,8 @@ class Env_IRS_v2():
     def sample_mat_Phi_rk(self):
         for k in range(self.num_users):
             #horizontal
+            self.mat_Phi_rk_h1 *= 0
+            self.mat_Phi_rk_h2 *= 0
             for i in range(self.num_irs_x1):
                 for j in range(i, self.num_irs_x1):
                     self.mat_Phi_rk_h1[i,j] = np.power(self.r_rk1(k),(j-i))
@@ -209,6 +213,8 @@ class Env_IRS_v2():
             self.mat_Phi_rk_h2 = self.mat_Phi_rk_h2 + self.mat_Phi_rk_h2.T \
                             - np.diag(self.mat_Phi_rk_h2.diagonal())
             #vertical
+            self.mat_Phi_rk_v1 *= 0
+            self.mat_Phi_rk_v2 *= 0
             for i in range(self.num_irs_z1):
                 for j in range(i, self.num_irs_z1):
                     self.mat_Phi_rk_v1[i,j] = np.power(self.r_rk1(k),(j-i))
@@ -226,47 +232,52 @@ class Env_IRS_v2():
                                             self.mat_Phi_rk_v2)).view(complex)
 
     def sample_spacial_comps(self):
-        self.sample_mat_Phi_d()
+        if self.switch_d:
+            self.sample_mat_Phi_d()
         self.sample_mat_Phi_r()
         self.sample_mat_Phi_rk()
 
     #sample small scale fading components
     def sample_z_dk(self): 
-        self.mat_Z_d = np.squeeze(np.random.normal(loc=0, scale=np.sqrt(2)/2, 
+        self.mat_Z_d = np.squeeze(self.rand_state.normal(loc=0, scale=np.sqrt(2)/2, 
                             size=(self.num_ap,self.num_users,2)).view(complex))
     def sample_z_rk(self): 
-        self.mat_Z_r1 = np.squeeze(np.random.normal(loc=0, scale=np.sqrt(2)/2, 
+        self.mat_Z_r1 = np.squeeze(self.rand_state.normal(loc=0, scale=np.sqrt(2)/2, 
                             size=(self.num_irs1,self.num_users,2)).view(complex)) 
-        self.mat_Z_r2 = np.squeeze(np.random.normal(loc=0, scale=np.sqrt(2)/2, 
+        self.mat_Z_r2 = np.squeeze(self.rand_state.normal(loc=0, scale=np.sqrt(2)/2, 
                             size=(self.num_irs2,self.num_users,2)).view(complex)) 
 
     def sample_F(self):
-        self.mat_F1 = np.squeeze(np.random.normal(loc=0, scale=np.sqrt(2)/2, 
+        self.mat_F1 = np.squeeze(self.rand_state.normal(loc=0, scale=np.sqrt(2)/2, 
                             size=(self.num_irs1,self.num_ap,2)).view(complex)) 
-        self.mat_F2 = np.squeeze(np.random.normal(loc=0, scale=np.sqrt(2)/2, 
+        self.mat_F2 = np.squeeze(self.rand_state.normal(loc=0, scale=np.sqrt(2)/2, 
                             size=(self.num_irs2,self.num_ap,2)).view(complex)) 
 
     def sample_rayleigh_comps(self):
-        self.sample_z_rk()
-        self.sample_z_dk()
+        if self.switch_d:
+            self.sample_z_dk()
         self.sample_F()
+        self.sample_z_rk()
 
     def sample_det_comps(self):
         if self.load_det_comps == False:
             self.sample_rayleigh_comps()
-            self.mat_Z_d_hat = self.mat_Z_d
+            if self.switch_d:
+                self.mat_Z_d_hat = self.mat_Z_d
             self.mat_Z_r_hat1 = self.mat_Z_r1 
             self.mat_Z_r_hat2 = self.mat_Z_r2
             self.mat_F_hat1 = self.mat_F1 
             self.mat_F_hat2 = self.mat_F2 
         else:
-            self.mat_Z_d_hat = np.load('/home/radio/hassaan/dpgzo/scripts_mp/model/det_comps/v2/mat_Z_d_hat.npy')
+            if self.switch_d:
+                self.mat_Z_d_hat = np.load('/home/radio/hassaan/dpgzo/scripts_mp/model/det_comps/v2/mat_Z_d_hat.npy')
             self.mat_Z_r_hat1 = np.load('/home/radio/hassaan/dpgzo/scripts_mp/model/det_comps/v2/mat_Z_r_hat1.npy') 
             self.mat_Z_r_hat2 = np.load('/home/radio/hassaan/dpgzo/scripts_mp/model/det_comps/v2/mat_Z_r_hat2.npy') 
             self.mat_F_hat1 = np.load('/home/radio/hassaan/dpgzo/scripts_mp/model/det_comps/v2/mat_F_hat1.npy') 
             self.mat_F_hat2 = np.load('/home/radio/hassaan/dpgzo/scripts_mp/model/det_comps/v2/mat_F_hat2.npy') 
         if self.save_det_comps == True:
-            np.save('/home/radio/hassaan/dpgzo/scripts_mp/model/det_comps/v2/mat_Z_d_hat.npy', self.mat_Z_d_hat)
+            if self.switch:
+                np.save('/home/radio/hassaan/dpgzo/scripts_mp/model/det_comps/v2/mat_Z_d_hat.npy', self.mat_Z_d_hat)
             np.save('/home/radio/hassaan/dpgzo/scripts_mp/model/det_comps/v2/mat_Z_r_hat1.npy',self.mat_Z_r_hat1)
             np.save('/home/radio/hassaan/dpgzo/scripts_mp/model/det_comps/v2/mat_Z_r_hat2.npy',self.mat_Z_r_hat2)
             np.save('/home/radio/hassaan/dpgzo/scripts_mp/model/det_comps/v2/mat_F_hat1.npy', self.mat_F_hat1)
@@ -298,9 +309,10 @@ class Env_IRS_v2():
     
     def sample_channels(self):
         self.sample_rayleigh_comps()
-        self.sample_H_d()
-        self.sample_H_r()
+        if self.switch_d:
+            self.sample_H_d()
         self.sample_G()
+        self.sample_H_r()
 
     def sample_eff_channel(self, vec_Theta):
         irs1 = np.diag(vec_Theta[:self.num_irs1])
@@ -308,8 +320,3 @@ class Env_IRS_v2():
         return np.dot(self.mat_G1.conj().T, np.dot(irs1.conj().T, self.mat_H_r1))\
             + np.dot(self.mat_G2.conj().T, np.dot(irs2.conj().T, self.mat_H_r2))\
             + self.mat_H_d
-        
-
-
-if __name__ == '__main__':
-    env = Env_IRS_v2()

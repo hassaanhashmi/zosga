@@ -1,4 +1,5 @@
 import sys
+import copy
 sys.path.append('/home/hmi/codes/sts_irs_optim/scripts')
 import numpy as np
 from method.wmmse import WMMSE
@@ -6,17 +7,18 @@ from utils.sumrate_cost import Sumrate
 
 
 class TTS(WMMSE):
-    def __init__(self, env, pow_max, num_users, num_ap, num_irs_x, 
-                num_irs_z,sigma_2, alphas, wmmse_iter, T_H, tau, rho_t_pow, 
+    def __init__(self,env, pow_max, num_irs_x, num_irs_z,sigma_2, user_weights, 
+                num_ap, wmmse_iter, T_H, tau, rho_t_pow, 
                 gamma_t_pow, vec_theta):
-        super(TTS,self).__init__(pow_max,sigma_2, alphas, wmmse_iter)
+        super(TTS,self).__init__(pow_max, sigma_2, user_weights, num_ap, wmmse_iter)
         self.env = env
+        self.env2 = copy.deepcopy(env) #internal channel sampling environment
         self.pow_max = pow_max
-        self.num_users = num_users
+        self.num_users = len(user_weights)
         self.num_ap = num_ap
         self.num_irs = num_irs_x * num_irs_z
         self.sigma_2 = sigma_2
-        self.alphas = alphas
+        self.user_weights = user_weights
         self.T_H = T_H
         self.G_list = []
         self.H_r_list = []
@@ -27,7 +29,8 @@ class TTS(WMMSE):
         self.vec_theta = vec_theta.copy()
         self.F = np.zeros(shape=(self.num_irs, self.num_users), dtype=complex)
         self.vec_f = np.zeros(self.num_irs).astype(complex)
-        self.sumrate_loss = Sumrate(self.alphas, sigma_2)
+        self.sumrate_loss = Sumrate(self.user_weights, sigma_2)
+        self.unit_vec = self.vec_theta.copy()
     
     #original
     def j_rate_irs(self, mat_pcv, mat_H_r, mat_H_d, mat_G):
@@ -73,15 +76,15 @@ class TTS(WMMSE):
         self.F *= (1-self.rho_t(t))
         j_update = np.zeros_like(self.F)
         for _ in range(self.T_H):
-            self.env.sample_channels() #INTERNAL CHANNEL SAMPLING
-            mat_H_eff = self.env.sample_eff_channel(vec_Theta=self.vec_theta)
+            self.env2.sample_channels() #INTERNAL CHANNEL SAMPLING
+            mat_H_eff = self.env2.sample_eff_channel(vec_Theta=self.vec_theta)
             mat_pcv = self.wmmse_step(mat_H_eff)
             j_update += self.j_rate_irs(mat_pcv=mat_pcv, 
-                                            mat_H_r=self.env.mat_H_r,
-                                            mat_H_d=self.env.mat_H_d,
-                                            mat_G=self.env.mat_G)
+                                            mat_H_r=self.env2.mat_H_r,
+                                            mat_H_d=self.env2.mat_H_d,
+                                            mat_G=self.env2.mat_G)
         self.F += self.rho_t(t)*j_update/self.T_H
-        self.vec_f = np.squeeze(self.F.dot(np.array(self.alphas)))
+        self.vec_f = np.squeeze(self.F.dot(np.array(self.user_weights)))
 
     def update_irs(self,t):
         vec_theta_ = np.zeros_like(self.vec_theta)
@@ -99,9 +102,10 @@ class TTS(WMMSE):
     def step(self, t=None, freeze_irs=False):
         if not freeze_irs:
             self.update_r_f(t)
-            self.update_irs(t)        
-        mat_H_eff = self.env.sample_eff_channel(self.vec_theta)
+            self.update_irs(t)
+        self.unit_vec = np.exp(1j*np.angle(self.vec_theta))
+        mat_H_eff=self.env.sample_eff_channel(self.unit_vec)
         mat_pcv = self.wmmse_step(mat_H_eff)
         s_rate, _, _ = self.sumrate_loss.get(np.expand_dims(mat_H_eff, axis=0), 
-                                np.expand_dims(mat_pcv, axis=0))
+                                                np.expand_dims(mat_pcv, axis=0))
         return s_rate

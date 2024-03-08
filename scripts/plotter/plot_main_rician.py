@@ -1,14 +1,9 @@
 import os
-from random import shuffle
 import numpy as np
-from collections import Counter
-import pandas as pd
 import matplotlib
 import matplotlib.pyplot as plt
-import matplotlib._color_data as mcd
 import seaborn as sns
-# from utils.movmean import movmean
-from scipy.signal import savgol_filter
+import tikzplotlib
 
 matplotlib.rc('text', usetex=True)
 matplotlib.rcParams['text.latex.preamble'] = r"\usepackage{amsmath}"
@@ -29,21 +24,28 @@ tex_fonts = {
     "ytick.major.pad":0,
     #set figure size and dpi
     'figure.figsize': (4.875, 3.69),
-    'figure.dpi': 600
+    'figure.dpi': 600,
+    'pdf.fonttype' : 42
 }
 
-p_wmmse_b = np.load('/home/radio/hassaan/dpgzo/scripts_mp/plot_data/rician/plot_wmmse_b.npy')
-p_tts_b = np.load('/home/radio/hassaan/dpgzo/scripts_mp/plot_data/rician/plot_tts_b.npy')
-p_zo_b = np.load('/home/radio/hassaan/dpgzo/scripts_mp/plot_data/rician/plot_zo_b.npy')
+p_wmmse_b = np.load('/home/radio/hassaan/dpgzo/scripts_mp/plot_data/rician/plot_wmmse_21_rand.npy')
+p_tts_b = np.load('/home/radio/hassaan/dpgzo/scripts_mp/plot_data/rician/plot_tts_21_rand.npy')
+p_zo_b = np.load('/home/radio/hassaan/dpgzo/scripts_mp/plot_data/rician/plot_zo_21_rand.npy')
 
-method_list = ['WMMSE with Random IRS', 'TTS-SSCO', 'ZOSGA with WMMSE (Proposed)']
+p_wmmse_b =np.hstack((p_wmmse_b,np.load('/home/radio/hassaan/dpgzo/scripts_mp/plot_data/rician/plot_wmmse_21.npy')))
+p_tts_b =np.hstack((p_tts_b,np.load('/home/radio/hassaan/dpgzo/scripts_mp/plot_data/rician/plot_tts_21.npy')))
+p_zo_b =np.hstack((p_zo_b,np.load('/home/radio/hassaan/dpgzo/scripts_mp/plot_data/rician/plot_zo_21.npy')))
+
+method_list = ['WMMSE (Randomized IRS)',
+                'TTS-SSCO: AA',  
+                'ZoSGA: AA']
 
 sns.set_style("whitegrid")
 sns.set_context("paper", rc={"lines.line_width":0.1})
 confidence_interval = 0.97
 plt.rcParams.update(tex_fonts)
 fig, ax = plt.subplots()
-plt.ylim(3.45,4.2)
+plt.ylim(3.3,4.0)
 
 savgol_window = 500
 savgol_polyorder = 4
@@ -63,11 +65,15 @@ xi = np.arange(beta_iu_db.shape[0])
 ax.set_xticks(xi, beta_iu_db)
     #plotting annotations
 ax.set_xlabel("Rician Factor $\\beta$(dB)")
-ax.set_ylabel("Average Sumrate")
-ax.set_title("$\\beta_{AI}=\\beta_{Iu}=\\beta$, $r_r = r_d = r_{r,k}=0$")
+ax.set_ylabel("Sumrate")
+# ax.set_title("$\\beta_{AI}=\\beta_{Iu}=\\beta$, $r_r = r_d = r_{r,k}=0$")
+ax.set_title("$\\beta_{AI}=\\beta_{Iu}=\\beta$, $\\beta_{Au}=$-5dB, $r_r = r_d = r_{r,k}=0$")
+# ax.set_title("$\\beta_{AI}=\\beta_{Iu}=\\beta$, $\\beta_{Au}=$0, $r_r = r_d = r_{r,k}=0$")
 ax.legend(loc='upper left')
 plt.tight_layout(pad=0.5)
 plt.subplots_adjust(top=0.95)
 ax.grid(True)
-# ax.show()
-plt.savefig('../pdfs/main_rician.pdf')
+# plt.show()
+tikzplotlib.save("../tex/irs1_rician.tex")
+plt.savefig('../pdfs/irs1_rician.pdf')
+# os._exit(00)
